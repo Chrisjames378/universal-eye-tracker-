@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#09090b">
+    <title>Universal Eye Tracking & Gaze OS Simulator</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Tone.js for Synthesized iOS Haptic & Audio Feedback -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <!-- MediaPipe Face Mesh for Real-Time Webcam Iris Tracking -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #09090b;
+            color: #f4f4f5;
+            overflow-x: hidden;
+            user-select: none;
+        }
+
+        /* Custom iOS Glassmorphism & Scrollbar */
+        .ios-glass {
+            background: rgba(28, 28, 30, 0.75);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .ios-wallpaper {
+            background: radial-gradient(circle at 20% 20%, #1e1b4b 0%, #0f172a 45%, #020617 100%);
+        }
+
+        /* Dwell Ring Animation */
+        .dwell-ring-circle {
+            transition: stroke-dashoffset 0.05s linear;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+
+        /* Gaze Target Highlight Effect (Mimics iOS Accessibility Snap-to-Item) */
+        .gaze-target {
+            transition: transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .gaze-target.gaze-hovered {
+            transform: scale(1.04);
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.85), 0 10px 25px -5px rgba(56, 189, 248, 0.4);
+            z-index: 20;
+        }
+
+        /* Custom Range Slider (iOS Style) */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #ffffff;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+            cursor: pointer;
+            margin-top: -8px;
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col lg:flex-row items-center justify-center p-4 md:p-6 gap-6 relative">
+
+    <!-- Hidden Video Element for Webcam Feed -->
+    <video id="webcam-video" class="hidden" playsinline></video>
+
+    <!-- Floating Gaze Reticle (iOS Accessibility Pointer) -->
+    <div id="gaze-reticle" class="fixed pointer-events-none z-50 hidden flex items-center justify-center" style="width: 56px; height: 56px; margin-left: -28px; margin-top: -28px;">
+        <!-- Outer Dwell Progress SVG -->
+        <svg class="w-full h-full drop-shadow-md" viewBox="0 0 60 60">
+            <circle cx="30" cy="30" r="24" fill="rgba(56, 189, 248, 0.12)" stroke="rgba(255, 255, 255, 0.25)" stroke-width="3"></circle>
+            <circle id="dwell-progress" class="dwell-ring-circle" cx="30" cy="30" r="24" fill="none" stroke="#38bdf8" stroke-width="4" stroke-linecap="round" stroke-dasharray="150.8" stroke-dashoffset="150.8"></circle>
+        </svg>
+        <!-- Center Pupil Dot -->
+        <div id="reticle-dot" class="absolute w-2.5 h-2.5 bg-sky-400 rounded-full shadow-[0_0_8px_#38bdf8] transition-transform duration-150"></div>
+    </div>
+
+    <!-- Fullscreen Calibration Overlay (Mimics iOS 10-Point Calibration) -->
+    <div id="calibration-overlay" class="fixed inset-0 z-50 bg-black/95 backdrop-blur-xl hidden flex-col items-center justify-center">
+        <div class="absolute top-8 text-center px-4">
+            <span class="px-3 py-1 rounded-full bg-sky-500/20 text-sky-400 text-xs font-semibold tracking-wider uppercase border border-sky-500/30">iOS Eye Tracking Setup</span>
+            <h2 class="text-2xl md:text-3xl font-bold text-white mt-3">Follow the Dot With Your Eyes</h2>
+            <p class="text-zinc-400 text-sm mt-1 max-w-md mx-auto">Keep your head steady and focus directly on the glowing circle until it locks in.</p>
+        </div>
+
+        <!-- Dynamic Calibration Target Dot -->
+        <button id="calib-dot" class="absolute w-12 h-12 -ml-6 -mt-6 rounded-full flex items-center justify-center transition-all duration-500 ease-out cursor-pointer focus:outline-none" style="top: 50%; left: 50%;">
+            <span class="absolute inset-0 rounded-full bg-sky-500/30 animate-ping"></span>
+            <span class="relative w-6 h-6 rounded-full bg-sky-400 border-2 border-white shadow-[0_0_20px_#38bdf8]"></span>
+        </button>
+
+        <div class="absolute bottom-10 flex flex-col items-center gap-3">
+            <div class="text-sm font-medium text-zinc-300" id="calib-status">Point 1 of 9</div>
+            <button id="cancel-calib-btn" class="px-5 py-2 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-sm font-medium transition">
+                Cancel Calibration
+            </button>
+        </div>
+    </div>
+
+    <!-- LEFT PANEL: Telemetry, Camera Feed & iOS Accessibility Settings -->
+    <aside class="w-full max-w-md lg:w-96 flex flex-col gap-4 z-10">
+        <!-- Header Card -->
+        <div class="ios-glass rounded-3xl p-5 shadow-2xl">
+            <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center shadow-lg shadow-sky-500/20">
+                        <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                    </div>
+                    <div>
+                        <h1 class="font-bold text-lg text-white leading-tight">Eye Tracking OS</h1>
+                        <p class="text-xs text-zinc-400">Universal Gaze & Assistive Suite</p>
+                    </div>
+                </div>
+                <span id="tracking-badge" class="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    Simulator Mode
+                </span>
+            </div>
+
+            <!-- Cross-Platform Device Profile Selector (PC, Surface Pro 6, Oppo A6x) -->
+            <div class="mt-3">
+                <div class="flex items-center justify-between text-[11px] text-zinc-400 mb-1.5">
+                    <span class="font-medium uppercase tracking-wider">Hardware & Camera Profile</span>
+                    <span id="device-optics-hint" class="text-sky-400 font-mono">16:9 • 1080p</span>
+                </div>
+                <div class="grid grid-cols-3 gap-1.5 p-1 bg-black/40 rounded-xl border border-white/5">
+                    <button data-device="pc" class="device-profile-btn py-1.5 px-2 rounded-lg text-[11px] font-semibold bg-sky-500/25 text-sky-300 border border-sky-500/40 transition">
+                        Desktop PC
+                    </button>
+                    <button data-device="surface" class="device-profile-btn py-1.5 px-2 rounded-lg text-[11px] font-semibold text-zinc-400 hover:text-white transition">
+                        Surface Pro 6
+                    </button>
+                    <button data-device="oppo" class="device-profile-btn py-1.5 px-2 rounded-lg text-[11px] font-semibold text-zinc-400 hover:text-white transition">
+                        Oppo A6x
+                    </button>
+                </div>
+            </div>
+
+            <!-- Input Source Switcher -->
+            <div class="grid grid-cols-2 gap-2 p-1 bg-black/40 rounded-xl border border-white/5 mt-3">
+                <button id="mode-sim-btn" class="py-2 px-3 rounded-lg text-xs font-semibold bg-zinc-800 text-white shadow transition">
+                    Cursor / Touch Sim
+                </button>
+                <button id="mode-cam-btn" class="py-2 px-3 rounded-lg text-xs font-semibold text-zinc-400 hover:text-white transition flex items-center justify-center gap-1.5">
+                    <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+                    Live Webcam AI
+                </button>
+            </div>
+
+            <!-- Accessibility Quick Presets -->
+            <div class="grid grid-cols-3 gap-1.5 mt-3">
+                <button data-preset="beginner" class="preset-btn py-1.5 px-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold text-zinc-300 transition">
+                    Stable (1.4s)
+                </button>
+                <button data-preset="pro" class="preset-btn py-1.5 px-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold text-sky-300 transition">
+                    Fast Pro (0.6s)
+                </button>
+                <button data-preset="blink" class="preset-btn py-1.5 px-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-[10px] font-semibold text-emerald-300 transition">
+                    Blink-Only
+                </button>
+            </div>
+        </div>
+
+        <!-- Iris & Head Telemetry Visualizer -->
+        <div class="ios-glass rounded-3xl p-5 shadow-2xl">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-xs font-semibold uppercase tracking-wider text-zinc-400">Biometric Iris Telemetry</span>
+                <span id="fps-counter" class="text-xs font-mono text-sky-400">60 FPS</span>
+            </div>
+            
+            <!-- Canvas for Eye Mesh / Simulated Dual Iris Vector Display -->
+            <div class="relative w-full h-36 bg-black/60 rounded-2xl overflow-hidden border border-white/10 flex items-center justify-center">
+                <canvas id="telemetry-canvas" class="w-full h-full"></canvas>
+                <div id="cam-loading-msg" class="hidden absolute inset-0 bg-black/80 flex flex-col items-center justify-center text-center p-4">
+                    <div class="w-6 h-6 border-2 border-sky-400 border-t-transparent rounded-full animate-spin mb-2"></div>
+                    <p class="text-xs text-zinc-300">Initializing Neural Iris Tracker...</p>
+                </div>
+            </div>
+
+            <!-- Live Coordinates -->
+            <div class="grid grid-cols-3 gap-2 mt-3 text-center">
+                <div class="bg-white/5 rounded-xl p-2">
+                    <div class="text-[10px] text-zinc-400 uppercase">Gaze X</div>
+                    <div id="stat-x" class="text-xs font-mono font-semibold text-white mt-0.5">50.0%</div>
+                </div>
+                <div class="bg-white/5 rounded-xl p-2">
+                    <div class="text-[10px] text-zinc-400 uppercase">Gaze Y</div>
+                    <div id="stat-y" class="text-xs font-mono font-semibold text-white mt-0.5">50.0%</div>
+                </div>
+                <div class="bg-white/5 rounded-xl p-2">
+                    <div class="text-[10px] text-zinc-400 uppercase">Confidence</div>
+                    <div id="stat-conf" class="text-xs font-mono font-semibold text-emerald-400 mt-0.5">99%</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- iOS Accessibility Controls -->
+        <div class="ios-glass rounded-3xl p-5 shadow-2xl flex flex-col gap-4">
+            <div class="flex items-center justify-between">
+                <div>
+                    <div class="text-sm font-medium text-white">Dwell Control</div>
+                    <div class="text-xs text-zinc-400">Auto-tap after holding gaze</div>
+                </div>
+                <button id="toggle-dwell" class="w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end">
+                    <span class="w-5 h-5 rounded-full bg-white shadow"></span>
+                </button>
+            </div>
+
+            <!-- Dwell Time Slider -->
+            <div>
+                <div class="flex justify-between text-xs mb-1.5">
+                    <span class="text-zinc-300">Dwell Duration</span>
+                    <span id="dwell-val-label" class="font-mono text-sky-400">1.0s</span>
+                </div>
+                <input id="dwell-slider" type="range" min="0.4" max="2.5" step="0.1" value="1.0" class="w-full">
+            </div>
+
+            <!-- Smoothing / Stabilization Slider -->
+            <div>
+                <div class="flex justify-between text-xs mb-1.5">
+                    <span class="text-zinc-300">Gaze Smoothing (Anti-Jitter)</span>
+                    <span id="smooth-val-label" class="font-mono text-sky-400">High</span>
+                </div>
+                <input id="smooth-slider" type="range" min="0.05" max="0.45" step="0.05" value="0.15" class="w-full">
+            </div>
+
+            <!-- Snap to Item Toggle -->
+            <div class="flex items-center justify-between pt-1 border-t border-white/10">
+                <div>
+                    <div class="text-sm font-medium text-white">Snap to Item</div>
+                    <div class="text-xs text-zinc-400">Magnetically lock onto UI buttons</div>
+                </div>
+                <button id="toggle-snap" class="w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end">
+                    <span class="w-5 h-5 rounded-full bg-white shadow"></span>
+                </button>
+            </div>
+
+            <!-- Head-Pose + Eye Fusion Toggle -->
+            <div class="flex items-center justify-between pt-1 border-t border-white/10">
+                <div>
+                    <div class="text-sm font-medium text-white">Head-Pose + Iris Fusion</div>
+                    <div class="text-xs text-zinc-400">Blend subtle head tilt for corner reach</div>
+                </div>
+                <button id="toggle-headpose" class="w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end">
+                    <span class="w-5 h-5 rounded-full bg-white shadow"></span>
+                </button>
+            </div>
+
+            <!-- Blink-to-Click & Sound / Heatmap Toggles -->
+            <div class="grid grid-cols-3 gap-2 pt-2 border-t border-white/10">
+                <button id="toggle-blink" class="py-2 px-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition">
+                    <span>Blink Click</span>
+                    <span id="blink-status-label" class="text-[9px] uppercase tracking-wider opacity-80">ON (B Key)</span>
+                </button>
+                <button id="toggle-sound" class="py-2 px-2 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition">
+                    <span>Audio Ticks</span>
+                    <span id="sound-status-label" class="text-[9px] uppercase tracking-wider opacity-80">ON</span>
+                </button>
+                <button id="toggle-heatmap" class="py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition">
+                    <span>Saccade Map</span>
+                    <span id="heatmap-status-label" class="text-[9px] uppercase tracking-wider opacity-80">OFF</span>
+                </button>
+            </div>
+
+            <!-- Calibrate Action Button -->
+            <button id="start-calib-btn" class="w-full py-3 rounded-2xl bg-sky-500 hover:bg-sky-400 active:scale-[0.98] text-white font-semibold text-sm shadow-lg shadow-sky-500/25 transition flex items-center justify-center gap-2 mt-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Calibrate Eye Tracking
+            </button>
+        </div>
+    <!-- RIGHT PANEL: Interactive Adaptive Device Viewport (iOS / Surface / Oppo A6x) -->
+    <main class="flex flex-col items-center justify-center w-full max-w-[420px]">
+        <!-- Hardware Bezel -->
+        <div id="device-bezel" class="relative w-full max-w-[390px] h-[760px] rounded-[54px] bg-zinc-900 p-3 shadow-[0_0_0_2px_#3f3f46,0_25px_70px_-15px_rgba(0,0,0,0.9)] flex flex-col transition-all duration-300">
+            
+            <!-- Screen Container -->
+            <div id="iphone-screen" class="relative w-full h-full rounded-[42px] ios-wallpaper overflow-hidden flex flex-col justify-between p-5 transition-all duration-300">
+                
+                <!-- Screen Brightness Dimmer Overlay (Controlled by Control Center) -->
+                <div id="screen-dimmer" class="absolute inset-0 bg-black pointer-events-none z-10 transition-opacity duration-200" style="opacity: 0;"></div>
+
+                <!-- Gaze Saccade Trail & Fixation Heatmap Overlay Canvas -->
+                <canvas id="heatmap-canvas" class="absolute inset-0 w-full h-full pointer-events-none z-30 hidden"></canvas>
+
+                <!-- AssistiveTouch Hot Corners (Top-Left: Control Center, Top-Right: Screenshot) -->
+                <button id="hot-corner-tl" data-action="Hot Corner: Control Center" title="Gaze Hot Corner: Control Center" class="gaze-target absolute top-0 left-0 w-12 h-12 rounded-br-3xl bg-sky-400/5 hover:bg-sky-400/20 border-b border-r border-white/10 z-20 flex items-center justify-center opacity-60 hover:opacity-100">
+                    <span class="w-1.5 h-1.5 rounded-full bg-sky-400/70"></span>
+                </button>
+                <button id="hot-corner-tr" data-action="Hot Corner: Screenshot Captured" title="Gaze Hot Corner: Screenshot" class="gaze-target absolute top-0 right-0 w-12 h-12 rounded-bl-3xl bg-sky-400/5 hover:bg-sky-400/20 border-b border-l border-white/10 z-20 flex items-center justify-center opacity-60 hover:opacity-100">
+                    <span class="w-1.5 h-1.5 rounded-full bg-sky-400/70"></span>
+                </button>
+
+                <!-- Floating AssistiveTouch Orb (Mimics iOS Eye Tracking AssistiveTouch Menu Trigger) -->
+                <button id="assistive-orb" data-action="Toggle AssistiveTouch Menu" class="gaze-target absolute right-3 top-1/2 -translate-y-1/2 w-12 h-12 rounded-full bg-zinc-900/85 backdrop-blur-md border border-white/25 shadow-[0_4px_20px_rgba(0,0,0,0.6)] z-30 flex items-center justify-center">
+                    <div class="w-8 h-8 rounded-full bg-white/15 flex items-center justify-center">
+                        <div class="w-5 h-5 rounded-full bg-white/80 shadow-inner"></div>
+                    </div>
+                </button>
+
+                <!-- AssistiveTouch Radial Hardware Modal -->
+                <div id="assistive-modal" class="hidden absolute inset-6 m-auto h-72 ios-glass rounded-[36px] p-5 z-40 flex flex-col items-center justify-between shadow-2xl border border-white/20">
+                    <div class="text-xs font-semibold tracking-wider uppercase text-sky-400">AssistiveTouch</div>
+                    <div class="grid grid-cols-3 gap-3 w-full">
+                        <button data-assistive="home" data-action="Hardware Home" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/10 hover:bg-white/20">
+                            <div class="w-9 h-9 rounded-full border-2 border-white flex items-center justify-center"><div class="w-3.5 h-3.5 rounded-sm border border-white"></div></div>
+                            <span class="text-[11px] font-medium text-white">Home</span>
+                        </button>
+                        <button data-assistive="control" data-action="Control Center" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/10 hover:bg-white/20">
+                            <svg class="w-9 h-9 text-sky-400 p-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+                            <span class="text-[11px] font-medium text-white">Controls</span>
+                        </button>
+                        <button data-assistive="screenshot" data-action="Screenshot Saved" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/10 hover:bg-white/20">
+                            <svg class="w-9 h-9 text-emerald-400 p-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/></svg>
+                            <span class="text-[11px] font-medium text-white">Capture</span>
+                        </button>
+                        <button data-assistive="pause" data-action="Toggle Gaze Pause" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-amber-500/15 hover:bg-amber-500/25 border border-amber-400/25">
+                            <svg class="w-9 h-9 text-amber-300 p-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                            <span id="assistive-pause-label" class="text-[11px] font-medium text-amber-200">Pause Gaze</span>
+                        </button>
+                        <button data-assistive="volup" data-action="Volume Up 80%" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/10 hover:bg-white/20">
+                            <svg class="w-9 h-9 text-amber-300 p-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/></svg>
+                            <span class="text-[11px] font-medium text-white">Vol +</span>
+                        </button>
+                        <button data-assistive="reader" data-action="Open Auto-Scroll Reader" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-white/10 hover:bg-white/20">
+                            <svg class="w-9 h-9 text-purple-300 p-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 8h6v4H7V8z"/></svg>
+                            <span class="text-[11px] font-medium text-white">Reader</span>
+                        </button>
+                        <button id="close-assistive-btn" data-action="Close Menu" class="gaze-target flex flex-col items-center gap-1.5 p-2.5 rounded-2xl bg-rose-500/20 text-rose-300">
+                            <svg class="w-9 h-9 p-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                            <span class="text-[11px] font-medium">Close</span>
+                        </button>
+                    </div>
+                    <div class="text-[10px] text-zinc-400">Dwell or Blink to Trigger Hardware Action</div>
+                </div>
+
+                <!-- Interactive Control Center Drawer (Gaze-Controlled Sliders & Toggles) -->
+                <div id="control-center-drawer" class="hidden absolute inset-x-4 top-12 ios-glass rounded-[32px] p-4 z-40 flex flex-col gap-3 shadow-2xl border border-white/20">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold uppercase tracking-wider text-sky-400">Control Center</span>
+                        <button id="close-cc-btn" data-action="Close Control Center" class="gaze-target px-3 py-1 rounded-full bg-white/10 text-[11px] font-semibold text-white">Done</button>
+                    </div>
+
+                    <!-- Connectivity Toggles -->
+                    <div class="grid grid-cols-3 gap-2">
+                        <button id="cc-wifi" data-action="Toggle Wi-Fi" class="gaze-target p-3 rounded-2xl bg-sky-500 text-white flex flex-col items-center gap-1">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0"/></svg>
+                            <span class="text-[10px] font-semibold">Wi-Fi</span>
+                        </button>
+                        <button id="cc-bt" data-action="Toggle Bluetooth" class="gaze-target p-3 rounded-2xl bg-blue-600 text-white flex flex-col items-center gap-1">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7l10 10-5 5V2l5 5L7 17"/></svg>
+                            <span class="text-[10px] font-semibold">Bluetooth</span>
+                        </button>
+                        <button id="cc-dnd" data-action="Toggle Focus Mode" class="gaze-target p-3 rounded-2xl bg-white/10 text-zinc-300 flex flex-col items-center gap-1">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+                            <span class="text-[10px] font-semibold">Focus</span>
+                        </button>
+                    </div>
+
+                    <!-- Gaze-Stepped Brightness & Volume Controls -->
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <div class="bg-white/10 rounded-2xl p-2.5 flex flex-col gap-2">
+                            <div class="flex justify-between text-[11px] font-medium text-white">
+                                <span>Brightness</span>
+                                <span id="cc-bright-val" class="text-amber-300 font-mono">100%</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <button id="cc-bright-down" data-action="Brightness Down" class="gaze-target py-2 rounded-xl bg-black/40 text-white font-bold text-sm">−</button>
+                                <button id="cc-bright-up" data-action="Brightness Up" class="gaze-target py-2 rounded-xl bg-amber-400/30 text-amber-200 font-bold text-sm">+</button>
+                            </div>
+                        </div>
+                        <div class="bg-white/10 rounded-2xl p-2.5 flex flex-col gap-2">
+                            <div class="flex justify-between text-[11px] font-medium text-white">
+                                <span>Volume</span>
+                                <span id="cc-vol-val" class="text-sky-300 font-mono">70%</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-1.5">
+                                <button id="cc-vol-down" data-action="Volume Down" class="gaze-target py-2 rounded-xl bg-black/40 text-white font-bold text-sm">−</button>
+                                <button id="cc-vol-up" data-action="Volume Up" class="gaze-target py-2 rounded-xl bg-sky-400/30 text-sky-200 font-bold text-sm">+</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Top Status Bar & Dynamic Island -->
+                <div class="flex items-center justify-between px-2 pt-1 z-20">
+                    <span id="ios-clock" class="text-xs font-semibold text-white tracking-tight">4:23</span>
+                    
+                    <!-- Dynamic Island (Shows Active Eye Tracking Indicator) -->
+                    <div class="h-7 px-3.5 bg-black rounded-full flex items-center gap-2 border border-white/10 shadow-inner">
+                        <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span class="text-[10px] font-medium text-zinc-300">Gaze Active</span>
+                    </div>
+
+                    <!-- Signal / Battery Icons -->
+                    <div class="flex items-center gap-1.5 text-white">
+                        <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3C7.46 3 3.34 4.78.29 7.67c-.18.18-.29.43-.29.71 0 .28.11.53.29.71l11 11c.19.19.44.29.71.29s.52-.1.71-.29l11-11c.18-.18.29-.43.29-.71 0-.28-.11-.53-.29-.71C20.66 4.78 16.54 3 12 3z"/></svg>
+                        <div class="w-5 h-2.5 border border-white/60 rounded-[3px] p-[1px] flex items-center">
+                            <div class="w-full h-full bg-white rounded-[1px]"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Dynamic App / Home Screen Content Area -->
+                <div id="ios-viewport" class="flex-1 flex flex-col justify-between my-4 overflow-hidden">
+                    
+                    <!-- Notification Toast Banner inside iPhone -->
+                    <div id="ios-toast" class="opacity-0 -translate-y-4 pointer-events-none transition-all duration-300 bg-zinc-900/90 backdrop-blur-md border border-white/15 rounded-2xl p-3 flex items-center gap-3 shadow-xl">
+                        <div class="w-8 h-8 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        </div>
+                        <div class="text-xs">
+                            <div id="ios-toast-title" class="font-semibold text-white">Gaze Tap Triggered</div>
+                            <div id="ios-toast-sub" class="text-zinc-400">Selected item via dwell</div>
+                        </div>
+                    </div>
+
+                    <!-- Interactive Widgets & App Grid (HOME VIEW) -->
+                    <div id="view-home" class="flex-1 flex flex-col justify-between gap-4 py-1">
+                        <!-- Top Interactive Music & Smart Home Widgets -->
+                        <div class="grid grid-cols-2 gap-3">
+                            <!-- Music Player Widget -->
+                            <div class="col-span-2 ios-glass rounded-3xl p-4 flex items-center justify-between">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg">
+                                        <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+                                    </div>
+                                    <div>
+                                        <div id="track-title" class="text-sm font-semibold text-white">Midnight City</div>
+                                        <div class="text-xs text-zinc-400">Spatial Audio • Atmos</div>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <button data-action="Play / Pause Music" class="gaze-target w-11 h-11 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center text-white">
+                                        <svg id="play-icon" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                    </button>
+                                    <button data-action="Next Track" class="gaze-target w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white">
+                                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Quick Toggle Tile 1: Smart Lights -->
+                            <button id="tile-lights" data-action="Toggle Room Lights" class="gaze-target ios-glass rounded-3xl p-4 flex flex-col items-start justify-between h-28 text-left">
+                                <div class="w-9 h-9 rounded-full bg-amber-400/20 text-amber-300 flex items-center justify-center">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                                </div>
+                                <div>
+                                    <div class="text-xs font-semibold text-white">Studio Lights</div>
+                                    <div id="lights-state" class="text-[11px] text-amber-300">On • 85%</div>
+                                </div>
+                            </button>
+
+                            <!-- Quick Toggle Tile 2: Assistive Speech -->
+                            <button id="tile-speech" data-action="Speak Quick Phrase" class="gaze-target ios-glass rounded-3xl p-4 flex flex-col items-start justify-between h-28 text-left">
+                                <div class="w-9 h-9 rounded-full bg-sky-400/20 text-sky-300 flex items-center justify-center">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                                </div>
+                                <div>
+                                    <div class="text-xs font-semibold text-white">Live Speech</div>
+                                    <div class="text-[11px] text-sky-300">Gaze Keyboard</div>
+                                </div>
+                            </button>
+                        </div>
+
+                        <!-- App Icons Grid (Large Gaze-Friendly Targets) -->
+                        <div class="grid grid-cols-3 gap-4 px-1">
+                            <button data-open-app="keyboard" data-action="Open Gaze Keyboard" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-gradient-to-b from-sky-400 to-blue-600 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-white">Type</span>
+                            </button>
+
+                            <button data-open-app="safari" data-action="Open Safari Auto-Scroll" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-gradient-to-b from-cyan-400 to-blue-500 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-white">Safari</span>
+                            </button>
+
+                            <button data-open-app="photos" data-action="Open Photos Gallery" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-gradient-to-tr from-amber-400 via-rose-500 to-purple-600 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-white">Photos</span>
+                            </button>
+
+                            <button id="open-cc-icon" data-action="Open Control Center" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-zinc-800 border border-white/15 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-zinc-300">Controls</span>
+                            </button>
+
+                            <button data-open-app="camera" data-action="Open Gaze Camera" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-zinc-800 border border-white/15 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-sky-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-zinc-300">Camera</span>
+                            </button>
+
+                            <button id="open-calib-shortcut" data-action="Recalibrate Gaze" class="gaze-target flex flex-col items-center gap-1.5 p-2 rounded-2xl">
+                                <div class="w-16 h-16 rounded-[20px] bg-gradient-to-b from-purple-500 to-indigo-700 flex items-center justify-center shadow-lg">
+                                    <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                </div>
+                                <span class="text-xs font-medium text-zinc-300">Calibrate</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Gaze Keyboard Sub-View (Expanded Full Alphabet + Predictive Chips) -->
+                    <div id="view-keyboard" class="hidden flex-1 flex flex-col justify-between gap-2 py-1">
+                        <div class="flex items-center justify-between">
+                            <button id="back-home-btn" data-action="Back to Home" class="gaze-target px-3.5 py-1.5 rounded-2xl bg-white/10 text-xs font-semibold text-white flex items-center gap-1">
+                                ← Home
+                            </button>
+                            <div class="flex gap-1">
+                                <button id="kb-page-btn" data-action="Switch Keyboard Page" class="gaze-target px-3 py-1.5 rounded-xl bg-sky-500/20 text-sky-300 text-[11px] font-semibold">A–M / N–Z</button>
+                            </div>
+                        </div>
+
+                        <!-- Output Text Box -->
+                        <div class="ios-glass rounded-2xl p-3 min-h-[68px] flex flex-col justify-between">
+                            <div id="typed-output" class="text-base font-medium text-white break-words">HELLO </div>
+                            <div class="flex justify-end gap-1.5 mt-1">
+                                <button id="backspace-text-btn" data-action="Backspace" class="gaze-target px-2.5 py-1 rounded-xl bg-white/10 text-zinc-200 text-[11px] font-semibold">⌫</button>
+                                <button id="clear-text-btn" data-action="Clear Text" class="gaze-target px-2.5 py-1 rounded-xl bg-rose-500/20 text-rose-300 text-[11px] font-semibold">Clear</button>
+                                <button id="speak-text-btn" data-action="Speak Phrase Aloud" class="gaze-target px-2.5 py-1 rounded-xl bg-emerald-500/20 text-emerald-300 text-[11px] font-semibold">Speak 🔊</button>
+                            </div>
+                        </div>
+
+                        <!-- Smart Word Prediction Bar -->
+                        <div id="predictive-bar" class="grid grid-cols-3 gap-1.5">
+                            <button data-predict="THERE " class="gaze-target py-1.5 px-2 rounded-xl bg-sky-500/15 border border-sky-500/30 text-xs font-semibold text-sky-200 truncate">THERE</button>
+                            <button data-predict="PLEASE " class="gaze-target py-1.5 px-2 rounded-xl bg-sky-500/15 border border-sky-500/30 text-xs font-semibold text-sky-200 truncate">PLEASE</button>
+                            <button data-predict="THANKS " class="gaze-target py-1.5 px-2 rounded-xl bg-sky-500/15 border border-sky-500/30 text-xs font-semibold text-sky-200 truncate">THANKS</button>
+                        </div>
+
+                        <!-- Dynamic Full-Alphabet Dwell Keys -->
+                        <div id="kb-keys-grid" class="grid grid-cols-4 gap-1.5 flex-1"></div>
+                    </div>
+
+                    <!-- Gaze Camera App Sub-View (Hidden by Default) -->
+                    <div id="view-camera" class="hidden flex-1 flex flex-col justify-between gap-2 py-1">
+                        <div class="flex items-center justify-between">
+                            <button data-nav-home="1" data-action="Back to Home" class="gaze-target px-3.5 py-1.5 rounded-2xl bg-white/10 text-xs font-semibold text-white">← Home</button>
+                            <span class="text-xs font-semibold text-amber-300">Gaze Shutter Camera</span>
+                        </div>
+                        <div class="relative flex-1 rounded-3xl overflow-hidden bg-zinc-950 border border-white/15 flex items-center justify-center">
+                            <video id="camera-app-live-feed" class="hidden w-full h-full object-cover scale-x-[-1]" playsinline muted autoplay></video>
+                            <canvas id="camera-snapshot-canvas" class="hidden"></canvas>
+                            <div id="camera-sim-viewfinder" class="absolute inset-0 bg-gradient-to-br from-sky-900/40 via-indigo-950/60 to-emerald-900/40 flex flex-col items-center justify-center p-4 text-center">
+                                <div class="w-24 h-24 rounded-full border border-amber-400/50 flex items-center justify-center mb-2">
+                                    <div class="w-2 h-2 rounded-full bg-amber-400"></div>
+                                </div>
+                                <span id="cam-lens-label" class="text-xs font-mono text-zinc-300">AE/AF LOCK • GAZE SHUTTER READY</span>
+                            </div>
+                            <div id="camera-flash" class="absolute inset-0 bg-white opacity-0 pointer-events-none transition-opacity duration-150"></div>
+                        </div>
+                        <div class="flex items-center justify-around py-1">
+                            <button data-open-app="photos" data-action="View Saved Captures" class="gaze-target w-11 h-11 rounded-2xl bg-white/10 text-xs font-semibold text-white flex items-center justify-center">Gallery</button>
+                            <button id="shutter-capture-btn" data-action="Capture Gaze Photo" class="gaze-target w-16 h-16 rounded-full border-4 border-white p-1 flex items-center justify-center">
+                                <div class="w-full h-full rounded-full bg-white"></div>
+                            </button>
+                            <button id="switch-lens-btn" data-action="Switch Lens 1x / 2x" class="gaze-target w-11 h-11 rounded-2xl bg-white/10 text-xs font-bold text-amber-300 flex items-center justify-center">1x</button>
+                        </div>
+                    </div>
+
+                    <!-- Photos Gallery Sub-View (Hidden by Default) -->
+                    <div id="view-photos" class="hidden flex-1 flex flex-col justify-between gap-2 py-1 overflow-hidden">
+                        <div class="flex items-center justify-between">
+                            <button data-nav-home="1" data-action="Back to Home" class="gaze-target px-3.5 py-1.5 rounded-2xl bg-white/10 text-xs font-semibold text-white">← Home</button>
+                            <span class="text-xs font-semibold text-rose-300">Gaze Photos</span>
+                        </div>
+                        <div id="photos-grid" class="flex-1 grid grid-cols-2 gap-2.5 overflow-y-auto pr-0.5">
+                            <div class="rounded-2xl bg-gradient-to-tr from-sky-500 to-indigo-600 p-3 flex flex-col justify-end h-28 shadow">
+                                <span class="text-[11px] font-bold text-white">Auckland Sky</span>
+                                <span class="text-[9px] text-white/80">Gaze Capture #1</span>
+                            </div>
+                            <div class="rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-700 p-3 flex flex-col justify-end h-28 shadow">
+                                <span class="text-[11px] font-bold text-white">Surface Workspace</span>
+                                <span class="text-[9px] text-white/80">Gaze Capture #2</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Safari Gaze Auto-Scroll Reader Sub-View (Hidden by Default) -->
+                    <div id="view-safari" class="hidden flex-1 flex flex-col justify-between gap-2 py-1 overflow-hidden">
+                        <div class="flex items-center justify-between shrink-0">
+                            <button id="safari-back-btn" data-action="Back to Home" class="gaze-target px-3.5 py-1.5 rounded-2xl bg-white/10 text-xs font-semibold text-white flex items-center gap-1">
+                                ← Home
+                            </button>
+                            <span id="scroll-zone-badge" class="text-[11px] font-medium text-sky-400 bg-sky-500/15 px-2.5 py-1 rounded-full border border-sky-500/30">Look Top/Bottom to Scroll</span>
+                        </div>
+
+                        <!-- Scrollable Reader Container with Top & Bottom Gaze Auto-Scroll Zones -->
+                        <div class="relative flex-1 rounded-3xl ios-glass overflow-hidden flex flex-col">
+                            <!-- Top Auto-Scroll Sensor Zone -->
+                            <div id="scroll-zone-up" class="h-10 bg-gradient-to-b from-sky-500/20 to-transparent flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-sky-300 shrink-0 transition-opacity">
+                                ▲ Gaze Here to Scroll Up ▲
+                            </div>
+
+                            <div id="safari-scroll-container" class="flex-1 overflow-y-auto px-4 py-2 space-y-3 text-xs leading-relaxed text-zinc-200 scroll-smooth">
+                                <h3 class="text-base font-bold text-white">How iOS Eye Tracking Works</h3>
+                                <p class="text-zinc-400 text-[11px]">Apple Accessibility • Neural Engine & TrueDepth</p>
+                                <p>Built directly into iOS and iPadOS, Eye Tracking gives users a hands-free way to navigate their iPhone using just their eyes. Powered by the front-facing camera and on-device machine learning, it calibrates in seconds without additional hardware.</p>
+                                <div class="p-3 rounded-2xl bg-white/5 border border-white/10">
+                                    <div class="font-semibold text-sky-300 mb-1">1. Dwell Control & Snap-to-Item</div>
+                                    <p class="text-zinc-300">As your gaze moves across the screen, an on-screen pointer follows your focal point and magnetically snaps toward interactive buttons, reducing fatigue from micro-saccades.</p>
+                                </div>
+                                <div class="p-3 rounded-2xl bg-white/5 border border-white/10">
+                                    <div class="font-semibold text-emerald-300 mb-1">2. Edge Auto-Scrolling</div>
+                                    <p class="text-zinc-300">When reading long articles in Safari or browsing Settings, resting your gaze near the upper or lower edge smoothly scrolls content proportionally to your gaze depth.</p>
+                                </div>
+                                <div class="p-3 rounded-2xl bg-white/5 border border-white/10">
+                                    <div class="font-semibold text-amber-300 mb-1">3. AssistiveTouch Integration</div>
+                                    <p class="text-zinc-300">Physical buttons like Volume, Lock Screen, and Control Center remain accessible through the floating AssistiveTouch menu or configurable screen hot corners.</p>
+                                </div>
+                                <p class="pb-6 text-zinc-400">End of Reader Article • Look at the top edge to scroll back up or dwell on Home.</p>
+                            </div>
+
+                            <!-- Bottom Auto-Scroll Sensor Zone -->
+                            <div id="scroll-zone-down" class="h-10 bg-gradient-to-t from-sky-500/20 to-transparent flex items-center justify-center text-[10px] font-semibold uppercase tracking-widest text-sky-300 shrink-0 transition-opacity">
+                                ▼ Gaze Here to Scroll Down ▼
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- Bottom Dock & Home Indicator -->
+                <div class="flex flex-col items-center gap-3 z-20">
+                    <div class="w-full ios-glass rounded-[28px] p-2.5 grid grid-cols-4 gap-2">
+                        <button data-action="Phone Dialer: Emergency & Hands-Free Call" class="gaze-target h-12 rounded-2xl bg-emerald-500 flex items-center justify-center text-white shadow">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+                        </button>
+                        <button data-open-app="keyboard" data-action="Open Gaze Messages & Speech" class="gaze-target h-12 rounded-2xl bg-green-500 flex items-center justify-center text-white shadow">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z"/></svg>
+                        </button>
+                        <button data-open-app="camera" data-action="Open Camera" class="gaze-target h-12 rounded-2xl bg-zinc-700 flex items-center justify-center text-white shadow">
+<!-- ... existing ... -->
+            gazeTrail: [],
+            fixationPoints: [],
+            brightness: 100,
+            volume: 70,
+            kbPage: 0,
+            lensZoom: '1x',
+            photoCount: 2,
+            gazePaused: false,
+            fpsEstimate: 60
+        };
+
+        const STORAGE_KEY = 'universal_gaze_os_prefs_v1';
+
+        function savePreferences() {
+            try {
+                const payload = {
+                    deviceProfile: state.deviceProfile,
+                    dwellEnabled: state.dwellEnabled,
+                    snapEnabled: state.snapEnabled,
+                    headPoseFusion: state.headPoseFusion,
+                    blinkClickEnabled: state.blinkClickEnabled,
+                    soundEnabled: state.soundEnabled,
+                    dwellDuration: state.dwellDuration,
+                    smoothingFactor: state.smoothingFactor,
+                    calibrationOffset: state.calibrationOffset
+                };
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+            } catch (e) {
+                // Ignore storage quota or privacy restrictions
+            }
+        }
+
+        function loadPreferences() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return;
+                const prefs = JSON.parse(raw);
+                if (prefs.deviceProfile && DEVICE_PROFILES[prefs.deviceProfile]) {
+                    state.deviceProfile = prefs.deviceProfile;
+                }
+                if (typeof prefs.dwellEnabled === 'boolean') state.dwellEnabled = prefs.dwellEnabled;
+                if (typeof prefs.snapEnabled === 'boolean') state.snapEnabled = prefs.snapEnabled;
+                if (typeof prefs.headPoseFusion === 'boolean') state.headPoseFusion = prefs.headPoseFusion;
+                if (typeof prefs.blinkClickEnabled === 'boolean') state.blinkClickEnabled = prefs.blinkClickEnabled;
+                if (typeof prefs.soundEnabled === 'boolean') state.soundEnabled = prefs.soundEnabled;
+                if (typeof prefs.dwellDuration === 'number') state.dwellDuration = prefs.dwellDuration;
+                if (typeof prefs.smoothingFactor === 'number') state.smoothingFactor = prefs.smoothingFactor;
+                if (prefs.calibrationOffset && typeof prefs.calibrationOffset.x === 'number' && typeof prefs.calibrationOffset.y === 'number') {
+                    state.calibrationOffset = prefs.calibrationOffset;
+                }
+
+                // Sync UI controls with restored preferences
+                const dwellSec = (state.dwellDuration / 1000).toFixed(1);
+                document.getElementById('dwell-slider').value = dwellSec;
+                document.getElementById('dwell-val-label').textContent = `${dwellSec}s`;
+
+                document.getElementById('smooth-slider').value = String(state.smoothingFactor);
+                const sVal = state.smoothingFactor;
+                document.getElementById('smooth-val-label').textContent = sVal <= 0.1 ? 'Ultra' : sVal <= 0.2 ? 'High' : sVal <= 0.35 ? 'Medium' : 'Low';
+
+                toggleDwellBtn.className = state.dwellEnabled
+                    ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                    : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+                toggleSnapBtn.className = state.snapEnabled
+                    ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                    : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+                toggleHeadPoseBtn.className = state.headPoseFusion
+                    ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                    : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+
+                document.getElementById('blink-status-label').textContent = state.blinkClickEnabled ? 'ON (B Key)' : 'OFF';
+                document.getElementById('sound-status-label').textContent = state.soundEnabled ? 'ON' : 'MUTED';
+
+                const devBtn = document.querySelector(`.device-profile-btn[data-device="${state.deviceProfile}"]`);
+                if (devBtn) devBtn.click();
+            } catch (e) {
+                // Ignore malformed saved state
+            }
+        }
+
+        // Initialize Clock
+        function updateClock() {
+            const now = new Date();
+            const h = now.getHours() % 12 || 12;
+            const m = String(now.getMinutes()).padStart(2, '0');
+            document.getElementById('ios-clock').textContent = `${h}:${m}`;
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // Resize Telemetry & Heatmap Canvases
+        function resizeCanvas() {
+            const rect = telemetryCanvas.parentElement.getBoundingClientRect();
+            telemetryCanvas.width = rect.width * window.devicePixelRatio;
+            telemetryCanvas.height = rect.height * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+
+            const phoneRect = heatmapCanvas.parentElement.getBoundingClientRect();
+            heatmapCanvas.width = phoneRect.width * window.devicePixelRatio;
+            heatmapCanvas.height = phoneRect.height * window.devicePixelRatio;
+            hCtx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Simulated Gaze Input (Mouse / Touch with realistic physiological micro-saccades)
+        window.addEventListener('mousemove', (e) => {
+            if (state.mode !== 'sim') return;
+            state.rawGaze.x = e.clientX;
+            state.rawGaze.y = e.clientY;
+            state.irisNorm.x = e.clientX / window.innerWidth;
+            state.irisNorm.y = e.clientY / window.innerHeight;
+            reticle.classList.remove('hidden');
+        });
+
+        // Keyboard 'B' Shortcut to Simulate an Intentional Blink in Cursor Sim Mode
+        window.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'b' && state.blinkClickEnabled && !state.isCalibrating) {
+                triggerSimulatedBlink();
+            }
+        });
+
+        // Support Touch Taps on Surface Pro 6 & Oppo A6x directly on screen
+        window.addEventListener('touchstart', (e) => {
+            if (state.mode !== 'sim' || !e.touches[0]) return;
+            state.rawGaze.x = e.touches[0].clientX;
+            state.rawGaze.y = e.touches[0].clientY;
+            state.irisNorm.x = state.rawGaze.x / window.innerWidth;
+            state.irisNorm.y = state.rawGaze.y / window.innerHeight;
+            reticle.classList.remove('hidden');
+        }, { passive: true });
+
+        function triggerSimulatedBlink() {
+            state.isBlinking = true;
+            state.earValue = 0.08;
+            setTimeout(() => {
+                state.isBlinking = false;
+                state.earValue = 0.32;
+                if (state.currentHoveredEl) {
+                    playFeedbackSound('blink');
+                    showIOSToast('Blink-to-Click', 'Instant ocular tap triggered');
+                    handleTargetActivation(state.currentHoveredEl);
+                    state.dwellTriggered = true;
+                }
+            }, 160);
+        }
+
+        window.addEventListener('touchmove', (e) => {
+            if (state.mode !== 'sim' || !e.touches[0]) return;
+            state.rawGaze.x = e.touches[0].clientX;
+            state.rawGaze.y = e.touches[0].clientY;
+            state.irisNorm.x = state.rawGaze.x / window.innerWidth;
+            state.irisNorm.y = state.rawGaze.y / window.innerHeight;
+            reticle.classList.remove('hidden');
+        }, { passive: true });
+
+        // Mode Switching: Simulator vs Live Webcam Iris Tracking
+        const modeSimBtn = document.getElementById('mode-sim-btn');
+        const modeCamBtn = document.getElementById('mode-cam-btn');
+        const trackingBadge = document.getElementById('tracking-badge');
+        const camLoadingMsg = document.getElementById('cam-loading-msg');
+
+        modeSimBtn.addEventListener('click', () => {
+            state.mode = 'sim';
+            modeSimBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold bg-zinc-800 text-white shadow transition';
+            modeCamBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold text-zinc-400 hover:text-white transition flex items-center justify-center gap-1.5';
+            trackingBadge.textContent = 'Simulator Mode';
+            trackingBadge.className = 'px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/20 text-amber-300 border border-amber-500/30';
+            document.getElementById('stat-conf').textContent = '99%';
+        });
+
+        modeCamBtn.addEventListener('click', async () => {
+            state.mode = 'webcam';
+            modeCamBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold bg-zinc-800 text-white shadow transition flex items-center justify-center gap-1.5';
+            modeSimBtn.className = 'py-2 px-3 rounded-lg text-xs font-semibold text-zinc-400 hover:text-white transition';
+            trackingBadge.textContent = 'Live Webcam AI';
+            trackingBadge.className = 'px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
+            reticle.classList.remove('hidden');
+
+            if (!state.webcamActive) {
+                await initWebcamIrisTracking();
+            }
+        });
+
+        // MediaPipe FaceMesh Iris Landmark Extraction
+        async function initWebcamIrisTracking() {
+            camLoadingMsg.classList.remove('hidden');
+            try {
+                state.faceMesh = new FaceMesh({
+                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+                });
+
+                state.faceMesh.setOptions({
+                    maxNumFaces: 1,
+                    refineLandmarks: true, // Enables iris landmarks 468-477
+                    minDetectionConfidence: 0.6,
+                    minTrackingConfidence: 0.6
+                });
+
+                state.faceMesh.onResults(onFaceMeshResults);
+
+                state.camera = new Camera(videoEl, {
+                    onFrame: async () => {
+                        if (state.mode === 'webcam' && state.faceMesh) {
+                            await state.faceMesh.send({ image: videoEl });
+                        }
+                    },
+                    width: 640,
+                    height: 480
+                });
+
+                await state.camera.start();
+                state.webcamActive = true;
+                camLoadingMsg.classList.add('hidden');
+                syncCameraAppFeed();
+                showIOSToast('TrueDepth AI Active', 'Tracking real-time iris landmarks');
+            } catch (err) {
+                camLoadingMsg.classList.add('hidden');
+                showIOSToast('Camera Access Denied', 'Reverting to Cursor Simulator');
+                modeSimBtn.click();
+            }
+        }
+
+        function onFaceMeshResults(results) {
+            if (state.mode !== 'webcam') return;
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const lm = results.multiFaceLandmarks[0];
+                // Left iris center: 468, eye corners: 33 (outer), 133 (inner), lids: 159 (top), 145 (bottom)
+                const iris = lm[468];
+                const outer = lm[33];
+                const inner = lm[133];
+                const topLid = lm[159];
+                const botLid = lm[145];
+
+                // Compute normalized horizontal & vertical pupil position inside eye socket
+                const eyeWidth = Math.hypot(inner.x - outer.x, inner.y - outer.y) || 0.01;
+                const eyeHeight = Math.hypot(topLid.x - botLid.x, topLid.y - botLid.y) || 0.01;
+
+                // Eye Aspect Ratio (EAR) for real-time Blink-to-Click Detection
+                state.earValue = eyeHeight / eyeWidth;
+                if (state.blinkClickEnabled && !state.isCalibrating) {
+                    if (state.earValue < 0.16 && !state.isBlinking) {
+                        state.isBlinking = true;
+                        state.blinkStartTime = performance.now();
+                    } else if (state.earValue >= 0.19 && state.isBlinking) {
+                        const blinkDur = performance.now() - state.blinkStartTime;
+                        state.isBlinking = false;
+                        if (blinkDur >= 90 && blinkDur <= 750 && state.currentHoveredEl) {
+                            playFeedbackSound('blink');
+                            showIOSToast('Blink-to-Click', 'Intentional ocular blink detected');
+                            handleTargetActivation(state.currentHoveredEl);
+                            state.dwellTriggered = true;
+                        }
+                    }
+                }
+
+                // Mirror X for natural selfie-camera alignment
+                const relX = 1 - ((iris.x - outer.x) / (inner.x - outer.x));
+                const relY = (iris.y - topLid.y) / (botLid.y - topLid.y);
+
+                // Amplify subtle ocular range to full viewport coordinates + calibration offset + device optical gain
+                const profile = DEVICE_PROFILES[state.deviceProfile] || DEVICE_PROFILES.pc;
+                let headYawOffset = 0;
+                let headPitchOffset = 0;
+
+                // Blend 3D Nose Tip / Head Orientation for easier corner reach (iOS / Surface Pro 6 style)
+                if (state.headPoseFusion && lm[1] && lm[234] && lm[454]) {
+                    const nose = lm[1];
+                    const leftCheek = lm[234];
+                    const rightCheek = lm[454];
+                    const faceMidX = (leftCheek.x + rightCheek.x) * 0.5;
+                    const faceWidth = Math.hypot(rightCheek.x - leftCheek.x, rightCheek.y - leftCheek.y) || 0.1;
+                    headYawOffset = -((nose.x - faceMidX) / faceWidth) * 0.35;
+                    headPitchOffset = ((nose.y - ((leftCheek.y + rightCheek.y) * 0.5)) / faceWidth) * 0.35;
+                }
+
+                const normX = Math.min(1, Math.max(0, (relX - 0.5) * profile.gainX + 0.5 + headYawOffset));
+                const normY = Math.min(1, Math.max(0, (relY - 0.5) * profile.gainY + 0.5 + headPitchOffset));
+
+                state.irisNorm.x = normX;
+                state.irisNorm.y = normY;
+
+                state.rawGaze.x = (normX * window.innerWidth * state.calibrationScale.x) + state.calibrationOffset.x;
+                state.rawGaze.y = (normY * window.innerHeight * state.calibrationScale.y) + state.calibrationOffset.y;
+
+                document.getElementById('stat-conf').textContent = '96%';
+            } else {
+                document.getElementById('stat-conf').textContent = 'Searching...';
+            }
+        }
+
+        // Device Profile Switcher (PC, Surface Pro 6, Oppo A6x)
+        document.querySelectorAll('.device-profile-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const dev = btn.getAttribute('data-device');
+                state.deviceProfile = dev;
+                const prof = DEVICE_PROFILES[dev];
+                document.getElementById('device-optics-hint').textContent = prof.hint;
+
+                document.querySelectorAll('.device-profile-btn').forEach(b => {
+                    b.className = b === btn
+                        ? 'device-profile-btn py-1.5 px-2 rounded-lg text-[11px] font-semibold bg-sky-500/25 text-sky-300 border border-sky-500/40 transition'
+                        : 'device-profile-btn py-1.5 px-2 rounded-lg text-[11px] font-semibold text-zinc-400 hover:text-white transition';
+                });
+
+                const bezel = document.getElementById('device-bezel');
+                bezel.className = `relative w-full ${prof.bezelClass} bg-zinc-900 p-3 shadow-[0_0_0_2px_#3f3f46,0_25px_70px_-15px_rgba(0,0,0,0.9)] flex flex-col transition-all duration-300`;
+                setTimeout(resizeCanvas, 320);
+                savePreferences();
+                showIOSToast(`${prof.label} Profile`, `Optics tuned (${prof.hint})`);
+            });
+        });
+
+        // Accessibility Quick Presets
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const preset = btn.getAttribute('data-preset');
+                if (preset === 'beginner') {
+                    state.dwellEnabled = true;
+                    state.dwellDuration = 1400;
+                    state.smoothingFactor = 0.10;
+                    document.getElementById('dwell-slider').value = '1.4';
+                    document.getElementById('dwell-val-label').textContent = '1.4s';
+                    document.getElementById('smooth-slider').value = '0.10';
+                    document.getElementById('smooth-val-label').textContent = 'Ultra';
+                    savePreferences();
+                    showIOSToast('Stable Preset', '1.4s dwell + ultra smoothing');
+                } else if (preset === 'pro') {
+                    state.dwellEnabled = true;
+                    state.dwellDuration = 600;
+                    state.smoothingFactor = 0.25;
+                    document.getElementById('dwell-slider').value = '0.6';
+                    document.getElementById('dwell-val-label').textContent = '0.6s';
+                    document.getElementById('smooth-slider').value = '0.25';
+                    document.getElementById('smooth-val-label').textContent = 'Medium';
+                    savePreferences();
+                    showIOSToast('Fast Pro Preset', '0.6s rapid dwell enabled');
+                } else if (preset === 'blink') {
+                    state.dwellEnabled = false;
+                    state.blinkClickEnabled = true;
+                    toggleDwellBtn.className = 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+                    savePreferences();
+                    showIOSToast('Blink-Only Mode', 'Look at item & blink (or press B)');
+                }
+            });
+        });
+
+        // Head-Pose Fusion Toggle
+        const toggleHeadPoseBtn = document.getElementById('toggle-headpose');
+        toggleHeadPoseBtn.addEventListener('click', () => {
+            state.headPoseFusion = !state.headPoseFusion;
+            toggleHeadPoseBtn.className = state.headPoseFusion
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+            savePreferences();
+        });
+
+        // Settings Controls
+        const toggleDwellBtn = document.getElementById('toggle-dwell');
+        toggleDwellBtn.addEventListener('click', () => {
+            state.dwellEnabled = !state.dwellEnabled;
+            toggleDwellBtn.className = state.dwellEnabled
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+            savePreferences();
+        });
+
+        const toggleSnapBtn = document.getElementById('toggle-snap');
+        toggleSnapBtn.addEventListener('click', () => {
+            state.snapEnabled = !state.snapEnabled;
+            toggleSnapBtn.className = state.snapEnabled
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+            savePreferences();
+        });
+
+        // Blink-to-Click, Audio Ticks, and Saccade Heatmap Toggles
+        const toggleBlinkBtn = document.getElementById('toggle-blink');
+        toggleBlinkBtn.addEventListener('click', () => {
+            state.blinkClickEnabled = !state.blinkClickEnabled;
+            document.getElementById('blink-status-label').textContent = state.blinkClickEnabled ? 'ON (B Key)' : 'OFF';
+            toggleBlinkBtn.className = state.blinkClickEnabled
+                ? 'py-2 px-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition'
+                : 'py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition';
+            savePreferences();
+        });
+
+        const toggleSoundBtn = document.getElementById('toggle-sound');
+        toggleSoundBtn.addEventListener('click', () => {
+            state.soundEnabled = !state.soundEnabled;
+            document.getElementById('sound-status-label').textContent = state.soundEnabled ? 'ON' : 'MUTED';
+            toggleSoundBtn.className = state.soundEnabled
+                ? 'py-2 px-2 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition'
+                : 'py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition';
+            if (state.soundEnabled) playFeedbackSound('hover');
+            savePreferences();
+        });
+        });
+
+        // Accessibility Quick Presets
+        document.querySelectorAll('.preset-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const preset = btn.getAttribute('data-preset');
+                if (preset === 'beginner') {
+                    state.dwellEnabled = true;
+                    state.dwellDuration = 1400;
+                    state.smoothingFactor = 0.10;
+                    document.getElementById('dwell-slider').value = '1.4';
+                    document.getElementById('dwell-val-label').textContent = '1.4s';
+                    document.getElementById('smooth-slider').value = '0.10';
+                    document.getElementById('smooth-val-label').textContent = 'Ultra';
+                    showIOSToast('Stable Preset', '1.4s dwell + ultra smoothing');
+                } else if (preset === 'pro') {
+                    state.dwellEnabled = true;
+                    state.dwellDuration = 600;
+                    state.smoothingFactor = 0.25;
+                    document.getElementById('dwell-slider').value = '0.6';
+                    document.getElementById('dwell-val-label').textContent = '0.6s';
+                    document.getElementById('smooth-slider').value = '0.25';
+                    document.getElementById('smooth-val-label').textContent = 'Medium';
+                    showIOSToast('Fast Pro Preset', '0.6s rapid dwell enabled');
+                } else if (preset === 'blink') {
+                    state.dwellEnabled = false;
+                    state.blinkClickEnabled = true;
+                    toggleDwellBtn.className = 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+                    showIOSToast('Blink-Only Mode', 'Look at item & blink (or press B)');
+                }
+            });
+        });
+
+        // Head-Pose Fusion Toggle
+        const toggleHeadPoseBtn = document.getElementById('toggle-headpose');
+        toggleHeadPoseBtn.addEventListener('click', () => {
+            state.headPoseFusion = !state.headPoseFusion;
+            toggleHeadPoseBtn.className = state.headPoseFusion
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+        });
+
+        // Settings Controls
+        const toggleDwellBtn = document.getElementById('toggle-dwell');
+        toggleDwellBtn.addEventListener('click', () => {
+            state.dwellEnabled = !state.dwellEnabled;
+            toggleDwellBtn.className = state.dwellEnabled
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+        });
+
+        const toggleSnapBtn = document.getElementById('toggle-snap');
+        toggleSnapBtn.addEventListener('click', () => {
+            state.snapEnabled = !state.snapEnabled;
+            toggleSnapBtn.className = state.snapEnabled
+                ? 'w-12 h-7 rounded-full bg-emerald-500 p-1 transition-colors duration-200 flex items-center justify-end'
+                : 'w-12 h-7 rounded-full bg-zinc-700 p-1 transition-colors duration-200 flex items-center justify-start';
+        });
+
+        // Blink-to-Click, Audio Ticks, and Saccade Heatmap Toggles
+        const toggleBlinkBtn = document.getElementById('toggle-blink');
+        toggleBlinkBtn.addEventListener('click', () => {
+            state.blinkClickEnabled = !state.blinkClickEnabled;
+            document.getElementById('blink-status-label').textContent = state.blinkClickEnabled ? 'ON (B Key)' : 'OFF';
+            toggleBlinkBtn.className = state.blinkClickEnabled
+                ? 'py-2 px-2 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition'
+                : 'py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition';
+        });
+
+        const toggleSoundBtn = document.getElementById('toggle-sound');
+        toggleSoundBtn.addEventListener('click', () => {
+            state.soundEnabled = !state.soundEnabled;
+            document.getElementById('sound-status-label').textContent = state.soundEnabled ? 'ON' : 'MUTED';
+            toggleSoundBtn.className = state.soundEnabled
+                ? 'py-2 px-2 rounded-xl bg-sky-500/20 border border-sky-500/40 text-sky-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition'
+                : 'py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition';
+            if (state.soundEnabled) playFeedbackSound('hover');
+        });
+
+        const toggleHeatmapBtn = document.getElementById('toggle-heatmap');
+        toggleHeatmapBtn.addEventListener('click', () => {
+            state.heatmapEnabled = !state.heatmapEnabled;
+            document.getElementById('heatmap-status-label').textContent = state.heatmapEnabled ? 'ACTIVE' : 'OFF';
+            toggleHeatmapBtn.className = state.heatmapEnabled
+                ? 'py-2 px-2 rounded-xl bg-purple-500/25 border border-purple-500/40 text-purple-300 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition'
+                : 'py-2 px-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-[11px] font-semibold flex flex-col items-center justify-center gap-0.5 transition';
+            if (state.heatmapEnabled) {
+                heatmapCanvas.classList.remove('hidden');
+            } else {
+                heatmapCanvas.classList.add('hidden');
+                state.gazeTrail = [];
+                state.fixationPoints = [];
+            }
+        });
+
+        document.getElementById('dwell-slider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            state.dwellDuration = val * 1000;
+            document.getElementById('dwell-val-label').textContent = `${val.toFixed(1)}s`;
+            savePreferences();
+        });
+
+        document.getElementById('smooth-slider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            state.smoothingFactor = val;
+            const label = val <= 0.1 ? 'Ultra' : val <= 0.2 ? 'High' : val <= 0.35 ? 'Medium' : 'Low';
+            document.getElementById('smooth-val-label').textContent = label;
+            savePreferences();
+        });
+
+        document.getElementById('smooth-slider').addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            state.smoothingFactor = val;
+            const label = val <= 0.1 ? 'Ultra' : val <= 0.2 ? 'High' : val <= 0.35 ? 'Medium' : 'Low';
+            document.getElementById('smooth-val-label').textContent = label;
+        });
+
+        // 9-Point iOS Calibration Routine
+        const calibOverlay = document.getElementById('calibration-overlay');
+        const calibDot = document.getElementById('calib-dot');
+        const calibStatus = document.getElementById('calib-status');
+        const calibPoints = [
+            { x: 50, y: 50 }, { x: 15, y: 18 }, { x: 85, y: 18 },
+            { x: 85, y: 50 }, { x: 85, y: 82 }, { x: 50, y: 82 },
+            { x: 15, y: 82 }, { x: 15, y: 50 }, { x: 50, y: 50 }
+        ];
+        let calibTimer = null;
+
+        function startCalibration() {
+            state.isCalibrating = true;
+            state.calibStep = 0;
+            calibOverlay.classList.remove('hidden');
+            calibOverlay.classList.add('flex');
+            advanceCalibrationStep();
+        }
+
+        function advanceCalibrationStep() {
+            if (state.calibStep >= calibPoints.length) {
+                finishCalibration();
+                return;
+            }
+            const pt = calibPoints[state.calibStep];
+            calibDot.style.left = `${pt.x}%`;
+            calibDot.style.top = `${pt.y}%`;
+            calibStatus.textContent = `Point ${state.calibStep + 1} of ${calibPoints.length}`;
+
+            clearTimeout(calibTimer);
+            calibTimer = setTimeout(() => {
+                // Record center offset on final center point
+                if (state.calibStep === calibPoints.length - 1 && state.mode === 'webcam') {
+                    const targetX = window.innerWidth * 0.5;
+                    const targetY = window.innerHeight * 0.5;
+                    state.calibrationOffset.x = targetX - (state.irisNorm.x * window.innerWidth);
+                    state.calibrationOffset.y = targetY - (state.irisNorm.y * window.innerHeight);
+                }
+                state.calibStep++;
+                advanceCalibrationStep();
+            }, 950);
+        }
+
+        function finishCalibration() {
+            state.isCalibrating = false;
+            calibOverlay.classList.add('hidden');
+            calibOverlay.classList.remove('flex');
+            clearTimeout(calibTimer);
+            savePreferences();
+            showIOSToast('Calibration Complete', 'Gaze accuracy optimized & saved');
+        }
+
+        document.getElementById('start-calib-btn').addEventListener('click', startCalibration);
+        document.getElementById('open-calib-shortcut').addEventListener('click', startCalibration);
+        function recordPhotoCapture(titleLabel) {
+            const flash = document.getElementById('camera-flash');
+            flash.style.opacity = '0.9';
+            setTimeout(() => flash.style.opacity = '0', 160);
+            state.photoCount++;
+            const grid = document.getElementById('photos-grid');
+            const card = document.createElement('div');
+            card.className = 'rounded-2xl bg-gradient-to-tr from-amber-500 via-pink-500 to-purple-600 p-3 flex flex-col justify-end h-28 shadow overflow-hidden relative';
+
+            // If live camera stream is active, grab a snapshot frame
+            const liveFeed = document.getElementById('camera-app-live-feed');
+            const snapCanvas = document.getElementById('camera-snapshot-canvas');
+            if (state.webcamActive && videoEl.readyState >= 2) {
+                snapCanvas.width = 240;
+                snapCanvas.height = 180;
+                const sCtx = snapCanvas.getContext('2d');
+                sCtx.save();
+                sCtx.scale(-1, 1);
+                sCtx.drawImage(videoEl, -240, 0, 240, 180);
+                sCtx.restore();
+                const img = document.createElement('img');
+                img.src = snapCanvas.toDataURL('image/jpeg', 0.75);
+                img.alt = titleLabel;
+                img.className = 'absolute inset-0 w-full h-full object-cover opacity-75';
+                card.appendChild(img);
+            }
+
+            const overlayText = document.createElement('div');
+            overlayText.className = 'relative z-10 flex flex-col';
+            overlayText.innerHTML = `<span class="text-[11px] font-bold text-white drop-shadow">${titleLabel}</span><span class="text-[9px] text-white/90 drop-shadow">Capture #${state.photoCount}</span>`;
+            card.appendChild(overlayText);
+            grid.prepend(card);
+        }
+
+        function syncCameraAppFeed() {
+            const liveFeed = document.getElementById('camera-app-live-feed');
+            const simView = document.getElementById('camera-sim-viewfinder');
+            if (state.webcamActive && videoEl.srcObject) {
+                liveFeed.srcObject = videoEl.srcObject;
+                liveFeed.classList.remove('hidden');
+                simView.classList.add('bg-black/25');
+            } else {
+                liveFeed.classList.add('hidden');
+                simView.classList.remove('bg-black/25');
+            }
+        }
+
+        function handleTargetActivation(el) {
+            const action = el.getAttribute('data-action');
+            const openApp = el.getAttribute('data-open-app');
+            const typeText = el.getAttribute('data-type');
+            const assistiveCmd = el.getAttribute('data-assistive');
+
+            playFeedbackSound('tap');
+
+            // Record Fixation Point for Heatmap Visualization
+            const phoneRect = heatmapCanvas.parentElement.getBoundingClientRect();
+            if (
+                state.smoothGaze.x >= phoneRect.left &&
+                state.smoothGaze.x <= phoneRect.right &&
+                state.smoothGaze.y >= phoneRect.top &&
+                state.smoothGaze.y <= phoneRect.bottom
+            ) {
+                state.fixationPoints.push({
+                    x: state.smoothGaze.x - phoneRect.left,
+                    y: state.smoothGaze.y - phoneRect.top,
+                    r: 28,
+                    alpha: 0.75
+                });
+                if (state.fixationPoints.length > 25) state.fixationPoints.shift();
+            }
+
+            // Tactile visual pulse on reticle
+            reticleDot.style.transform = 'scale(1.8)';
+            setTimeout(() => reticleDot.style.transform = 'scale(1)', 180);
+
+            // Top-Right Hot Corner Screenshot Capture
+            if (el.id === 'hot-corner-tr') {
+                recordPhotoCapture('Screen Capture');
+                showIOSToast('Screenshot Captured', 'Saved to Gaze Photos');
+                return;
+            }
+
+            // AssistiveTouch Floating Orb & Radial Modal Actions
+            if (el.id === 'assistive-orb') {
+                document.getElementById('assistive-modal').classList.toggle('hidden');
+                return;
+            }
+            if (el.id === 'close-assistive-btn') {
+                document.getElementById('assistive-modal').classList.add('hidden');
+                return;
+            }
+            if (el.id === 'hot-corner-tl' || el.id === 'open-cc-icon') {
+                document.getElementById('control-center-drawer').classList.remove('hidden');
+                showIOSToast('Control Center', 'Dwell on sliders or toggles');
+                return;
+            }
+            if (el.id === 'close-cc-btn') {
+                document.getElementById('control-center-drawer').classList.add('hidden');
+                return;
+            }
+            if (el.id === 'cc-bright-up' || el.id === 'cc-bright-down') {
+                state.brightness = Math.min(100, Math.max(20, state.brightness + (el.id === 'cc-bright-up' ? 20 : -20)));
+                document.getElementById('cc-bright-val').textContent = `${state.brightness}%`;
+                document.getElementById('screen-dimmer').style.opacity = ((100 - state.brightness) / 130).toFixed(2);
+                return;
+            }
+            if (el.id === 'cc-vol-up' || el.id === 'cc-vol-down') {
+                state.volume = Math.min(100, Math.max(0, state.volume + (el.id === 'cc-vol-up' ? 15 : -15)));
+                document.getElementById('cc-vol-val').textContent = `${state.volume}%`;
+                return;
+            }
+            if (el.id === 'cc-wifi' || el.id === 'cc-bt' || el.id === 'cc-dnd') {
+                el.classList.toggle('opacity-40');
+                showIOSToast(action, 'Toggled via Gaze');
+                return;
+            }
+            if (assistiveCmd) {
+                document.getElementById('assistive-modal').classList.add('hidden');
+                if (assistiveCmd === 'home') {
+                    switchPhoneView('view-home');
+                } else if (assistiveCmd === 'reader') {
+                    switchPhoneView('view-safari');
+                } else if (assistiveCmd === 'control') {
+                    document.getElementById('control-center-drawer').classList.remove('hidden');
+                } else if (assistiveCmd === 'screenshot') {
+                    recordPhotoCapture('Assistive Capture');
+                } else if (assistiveCmd === 'pause') {
+                    state.gazePaused = !state.gazePaused;
+                    document.getElementById('assistive-pause-label').textContent = state.gazePaused ? 'Resume Gaze' : 'Pause Gaze';
+                    showIOSToast(state.gazePaused ? 'Gaze Paused' : 'Gaze Resumed', state.gazePaused ? 'Dwell taps suspended' : 'Active gaze control restored');
+                    return;
+                }
+                showIOSToast(action, 'AssistiveTouch Hardware Trigger');
+                return;
+            }
+
+            if (openApp) {
+                switchPhoneView(`view-${openApp}`);
+                if (openApp === 'keyboard') renderKeyboardKeys();
+                if (openApp === 'camera') syncCameraAppFeed();
+                showIOSToast(action, 'Launched via Eye Tracking');
+                return;
+            }
+
+            if (el.id === 'back-home-btn' || el.id === 'safari-back-btn' || el.hasAttribute('data-nav-home')) {
+                switchPhoneView('view-home');
+                return;
+            }
+
+            if (el.id === 'kb-page-btn') {
+                state.kbPage = state.kbPage === 0 ? 1 : 0;
+                renderKeyboardKeys();
+                return;
+            }
+
+            if (typeText || el.hasAttribute('data-predict')) {
+                const out = document.getElementById('typed-output');
+                if (el.hasAttribute('data-predict')) {
+                    const words = out.textContent.trimEnd().split(' ');
+                    words[words.length - 1] = el.getAttribute('data-predict').trim();
+                    out.textContent = words.join(' ') + ' ';
+                } else {
+                    out.textContent += typeText;
+                }
+                updateWordPredictions();
+                return;
+            }
+
+            if (el.id === 'backspace-text-btn') {
+                const out = document.getElementById('typed-output');
+                out.textContent = out.textContent.slice(0, -1);
+                updateWordPredictions();
+                return;
+            }
+
+            if (el.id === 'clear-text-btn') {
+                document.getElementById('typed-output').textContent = '';
+                updateWordPredictions();
+                return;
+            }
+
+            if (el.id === 'shutter-capture-btn') {
+                recordPhotoCapture(`Gaze Snap (${state.lensZoom})`);
+                showIOSToast('Photo Captured', 'Saved to Gaze Photos');
+                return;
+            }
+
+            if (el.id === 'switch-lens-btn') {
+                state.lensZoom = state.lensZoom === '1x' ? '2x' : '1x';
+                el.textContent = state.lensZoom;
+                document.getElementById('cam-lens-label').textContent = `OPTICAL ${state.lensZoom} • GAZE SHUTTER READY`;
+                return;
+            }
+
+            if (el.id === 'speak-text-btn') {
+                const phrase = document.getElementById('typed-output').textContent.trim() || 'Hello';
+                showIOSToast('Live Speech', `"${phrase}"`);
+                if ('speechSynthesis' in window) {
+                    window.speechSynthesis.cancel();
+                    window.speechSynthesis.speak(new SpeechSynthesisUtterance(phrase));
+                }
+                return;
+            }
+
+            if (el.id === 'tile-lights') {
+                state.lightsOn = !state.lightsOn;
+                document.getElementById('lights-state').textContent = state.lightsOn ? 'On • 85%' : 'Off';
+                document.getElementById('lights-state').className = state.lightsOn ? 'text-[11px] text-amber-300' : 'text-[11px] text-zinc-400';
+            }
+
+            if (action === 'Play / Pause Music') {
+                state.isPlaying = !state.isPlaying;
+                document.getElementById('play-icon').innerHTML = state.isPlaying
+                    ? '<path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>'
+                    : '<path d="M8 5v14l11-7z"/>';
+            }
+
+            if (action === 'Next Track') {
+                state.trackIdx = (state.trackIdx + 1) % state.tracks.length;
+                document.getElementById('track-title').textContent = state.tracks[state.trackIdx];
+            }
+
+            if (action) {
+                showIOSToast(action, 'Activated via Eye Tracking');
+            }
+        }
+
+        // Bind normal click fallback for direct testing
+        function bindGazeTargets() {
+            document.querySelectorAll('.gaze-target').forEach(btn => {
+                if (btn.dataset.bound) return;
+                btn.dataset.bound = '1';
+                btn.addEventListener('click', () => handleTargetActivation(btn));
+            });
+        }
+        bindGazeTargets();
+
+        function switchPhoneView(viewId) {
+            ['view-home', 'view-keyboard', 'view-safari', 'view-camera', 'view-photos'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.add('hidden');
+            });
+            const target = document.getElementById(viewId);
+            if (target) target.classList.remove('hidden');
+        }
+
+        // Dynamic Full-Alphabet Dwell Keyboard & Word Prediction Engine
+        const KB_PAGES = [
+            ['A','B','C','D','E','F','G','H','I','J','K','L','M','␣'],
+            ['N','O','P','Q','R','S','T','U','V','W','X','Y','Z','?']
+        ];
+        const DICTIONARY = ['HELLO', 'HELP', 'THANKS', 'THANK YOU', 'PLEASE', 'WATER', 'YES', 'NO', 'READY', 'SURFACE', 'OPPO', 'HOME', 'GOOD', 'MORNING'];
+
+        function renderKeyboardKeys() {
+            const grid = document.getElementById('kb-keys-grid');
+            grid.innerHTML = '';
+            KB_PAGES[state.kbPage].forEach(ch => {
+                const btn = document.createElement('button');
+                const val = ch === '␣' ? ' ' : ch;
+                btn.setAttribute('data-type', val);
+                btn.className = 'gaze-target bg-white/10 hover:bg-white/20 rounded-xl text-sm font-bold text-white flex items-center justify-center';
+                btn.textContent = ch === '␣' ? 'SPACE' : ch;
+                grid.appendChild(btn);
+            });
+            bindGazeTargets();
+        }
+
+        function updateWordPredictions() {
+            const text = document.getElementById('typed-output').textContent.trim();
+            const lastToken = (text.split(' ').pop() || '').toUpperCase();
+            const matches = DICTIONARY.filter(w => w.startsWith(lastToken) && w !== lastToken);
+            const suggestions = (matches.length ? matches : ['YES', 'PLEASE', 'THANKS']).slice(0, 3);
+            const bar = document.getElementById('predictive-bar');
+            bar.innerHTML = '';
+            suggestions.forEach(word => {
+                const b = document.createElement('button');
+                b.setAttribute('data-predict', `${word} `);
+                b.className = 'gaze-target py-1.5 px-2 rounded-xl bg-sky-500/15 border border-sky-500/30 text-xs font-semibold text-sky-200 truncate';
+                b.textContent = word;
+                bar.appendChild(b);
+            });
+            bindGazeTargets();
+        }
+
+        // Draw Dual-Eye Biometric Telemetry Canvas
+        function renderTelemetry(time) {
+            const w = telemetryCanvas.width / window.devicePixelRatio;
+            const h = telemetryCanvas.height / window.devicePixelRatio;
+            ctx.clearRect(0, 0, w, h);
+
+            // Subtle Grid Background
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            for (let x = 0; x < w; x += 24) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+            }
+            for (let y = 0; y < h; y += 24) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+            }
+
+            // Draw Left & Right Virtual Eyes tracking irisNorm
+            const eyeCenters = [w * 0.32, w * 0.68];
+            const eyeY = h * 0.5;
+            const offsetX = (state.irisNorm.x - 0.5) * 26;
+            const offsetY = (state.irisNorm.y - 0.5) * 14;
+
+            eyeCenters.forEach((cx) => {
+                // Almond Sclera Outline (Pinches closed dynamically when blinking)
+                const lidOpen = state.isBlinking ? 3 : 26;
+                ctx.beginPath();
+                ctx.moveTo(cx - 44, eyeY);
+                ctx.quadraticCurveTo(cx, eyeY - lidOpen, cx + 44, eyeY);
+                ctx.quadraticCurveTo(cx, eyeY + lidOpen, cx - 44, eyeY);
+                ctx.strokeStyle = state.isBlinking ? '#fbbf24' : 'rgba(56, 189, 248, 0.5)';
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(14, 165, 233, 0.06)';
+                ctx.fill();
+
+                if (!state.isBlinking) {
+                    // Iris Ring
+                    const ix = cx + offsetX;
+                    const iy = eyeY + offsetY;
+                    ctx.beginPath();
+                    ctx.arc(ix, iy, 13, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(56, 189, 248, 0.25)';
+                    ctx.fill();
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+
+                    // Pupil
+                    ctx.beginPath();
+                    ctx.arc(ix, iy, 5.5, 0, Math.PI * 2);
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fill();
+
+                    // Gaze Ray Vector
+                    ctx.beginPath();
+                    ctx.moveTo(ix, iy);
+                    ctx.lineTo(ix + offsetX * 1.4, iy + offsetY * 1.4);
+                    ctx.strokeStyle = 'rgba(56, 189, 248, 0.8)';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+                }
+            });
+        }
+
+        // Render Saccade Trail & Fixation Heatmap Overlay on iPhone Screen
+        function renderHeatmapOverlay() {
+            if (!state.heatmapEnabled) return;
+            const phoneRect = heatmapCanvas.parentElement.getBoundingClientRect();
+            const w = phoneRect.width;
+            const h = phoneRect.height;
+            hCtx.clearRect(0, 0, w, h);
+
+            // Record gaze point if inside iPhone bounds
+            if (
+                state.smoothGaze.x >= phoneRect.left &&
+                state.smoothGaze.x <= phoneRect.right &&
+                state.smoothGaze.y >= phoneRect.top &&
+                state.smoothGaze.y <= phoneRect.bottom
+            ) {
+                state.gazeTrail.push({
+                    x: state.smoothGaze.x - phoneRect.left,
+                    y: state.smoothGaze.y - phoneRect.top
+                });
+                if (state.gazeTrail.length > 45) state.gazeTrail.shift();
+            }
+
+            // Draw Fixation Heatmap Nodes
+            state.fixationPoints.forEach(pt => {
+                const grad = hCtx.createRadialGradient(pt.x, pt.y, 2, pt.x, pt.y, pt.r);
+                grad.addColorStop(0, 'rgba(244, 63, 94, 0.55)');
+                grad.addColorStop(0.5, 'rgba(251, 191, 36, 0.25)');
+                grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+                hCtx.fillStyle = grad;
+                hCtx.beginPath();
+                hCtx.arc(pt.x, pt.y, pt.r, 0, Math.PI * 2);
+                hCtx.fill();
+            });
+
+            // Draw Saccade Trajectory Path
+            if (state.gazeTrail.length > 1) {
+                hCtx.beginPath();
+                hCtx.moveTo(state.gazeTrail[0].x, state.gazeTrail[0].y);
+                for (let i = 1; i < state.gazeTrail.length; i++) {
+                    hCtx.lineTo(state.gazeTrail[i].x, state.gazeTrail[i].y);
+                }
+                hCtx.strokeStyle = 'rgba(192, 132, 252, 0.65)';
+                hCtx.lineWidth = 2;
+                hCtx.stroke();
+            }
+        }
+
+        // Edge Auto-Scroll Handler for Safari Reader View
+        function handleGazeAutoScroll() {
+            const safariView = document.getElementById('view-safari');
+            if (safariView.classList.contains('hidden')) return;
+
+            const scrollContainer = document.getElementById('safari-scroll-container');
+            const zoneUp = document.getElementById('scroll-zone-up').getBoundingClientRect();
+            const zoneDown = document.getElementById('scroll-zone-down').getBoundingClientRect();
+            const gx = state.smoothGaze.x;
+            const gy = state.smoothGaze.y;
+
+            if (gx >= zoneUp.left && gx <= zoneUp.right && gy >= zoneUp.top && gy <= zoneUp.bottom) {
+                scrollContainer.scrollTop -= 4.5;
+                document.getElementById('scroll-zone-badge').textContent = '▲ Auto-Scrolling Up';
+            } else if (gx >= zoneDown.left && gx <= zoneDown.right && gy >= zoneDown.top && gy <= zoneDown.bottom) {
+                scrollContainer.scrollTop += 4.5;
+                document.getElementById('scroll-zone-badge').textContent = '▼ Auto-Scrolling Down';
+            } else {
+                document.getElementById('scroll-zone-badge').textContent = 'Look Top/Bottom to Scroll';
+            }
+        }
+
+        // Main Real-Time Gaze & Dwell Physics Loop (60Hz)
+        let lastFrame = performance.now();
+        let fpsFrames = 0;
+        let fpsLastSample = performance.now();
+
+        function updateLoop(now) {
+            const dt = now - lastFrame;
+            lastFrame = now;
+
+            fpsFrames++;
+            if (now - fpsLastSample >= 500) {
+                state.fpsEstimate = Math.round((fpsFrames * 1000) / (now - fpsLastSample));
+                document.getElementById('fps-counter').textContent = `${state.fpsEstimate} FPS`;
+                fpsFrames = 0;
+                fpsLastSample = now;
+            }
+
+            // Add subtle physiological ocular micro-tremor in sim mode
+            const tremorX = state.mode === 'sim' ? Math.sin(now * 0.025) * 1.8 : 0;
+            const tremorY = state.mode === 'sim' ? Math.cos(now * 0.031) * 1.8 : 0;
+
+            let targetX = state.rawGaze.x + tremorX;
+            let targetY = state.rawGaze.y + tremorY;
+
+            // Hit-testing for iOS Gaze Targets
+            let hoveredTarget = null;
+            const targets = document.querySelectorAll('.gaze-target');
+            targets.forEach(el => {
+                if (el.offsetParent === null) return; // Skip hidden elements
+                const rect = el.getBoundingClientRect();
+                const pad = 8; // Generous hit padding like iOS Accessibility
+                if (
+                    targetX >= rect.left - pad &&
+                    targetX <= rect.right + pad &&
+                    targetY >= rect.top - pad &&
+                    targetY <= rect.bottom + pad
+                ) {
+                    hoveredTarget = el;
+                }
+            });
+
+            // Magnetic Snap-to-Item (iOS Accessibility Signature Feature)
+            if (hoveredTarget && state.snapEnabled && !state.gazePaused) {
+                const rect = hoveredTarget.getBoundingClientRect();
+                const centerX = rect.left + rect.width / 2;
+                const centerY = rect.top + rect.height / 2;
+                targetX = targetX * 0.35 + centerX * 0.65;
+                targetY = targetY * 0.35 + centerY * 0.65;
+            }
+
+            // Exponential Low-Pass Smoothing Filter
+            state.smoothGaze.x += (targetX - state.smoothGaze.x) * state.smoothingFactor;
+            state.smoothGaze.y += (targetY - state.smoothGaze.y) * state.smoothingFactor;
+
+            // Position Floating Reticle
+            reticle.style.transform = `translate3d(${state.smoothGaze.x}px, ${state.smoothGaze.y}px, 0)`;
+            reticle.style.opacity = state.gazePaused ? '0.4' : '1';
+
+            // Update Telemetry Readouts
+            const pctX = Math.min(100, Math.max(0, (state.smoothGaze.x / window.innerWidth) * 100));
+            const pctY = Math.min(100, Math.max(0, (state.smoothGaze.y / window.innerHeight) * 100));
+            document.getElementById('stat-x').textContent = `${pctX.toFixed(1)}%`;
+            document.getElementById('stat-y').textContent = `${pctY.toFixed(1)}%`;
+
+            // Handle Dwell-to-Click State Machine (suspended while Gaze Pause is active)
+            if (state.gazePaused) {
+                if (state.currentHoveredEl) {
+                    state.currentHoveredEl.classList.remove('gaze-hovered');
+                    state.currentHoveredEl = null;
+                }
+                dwellCircle.style.strokeDashoffset = CIRCUMFERENCE;
+            } else if (hoveredTarget !== state.currentHoveredEl) {
+                if (state.currentHoveredEl) {
+                    state.currentHoveredEl.classList.remove('gaze-hovered');
+                }
+                state.currentHoveredEl = hoveredTarget;
+                state.dwellStartTime = hoveredTarget ? now : null;
+                state.dwellTriggered = false;
+                dwellCircle.style.strokeDashoffset = CIRCUMFERENCE;
+
+                if (hoveredTarget) {
+                    hoveredTarget.classList.add('gaze-hovered');
+                    playFeedbackSound('hover');
+                }
+            } else if (hoveredTarget && state.dwellEnabled && !state.dwellTriggered && !state.isCalibrating) {
+                const elapsed = now - state.dwellStartTime;
+                const progress = Math.min(1, elapsed / state.dwellDuration);
+                dwellCircle.style.strokeDashoffset = CIRCUMFERENCE * (1 - progress);
+
+                if (progress >= 1) {
+                    state.dwellTriggered = true;
+                    dwellCircle.style.strokeDashoffset = CIRCUMFERENCE;
+                    handleTargetActivation(hoveredTarget);
+                }
+            }
+
+            handleGazeAutoScroll();
+            renderHeatmapOverlay();
+            renderTelemetry(now);
+            requestAnimationFrame(updateLoop);
+        }
+
+        // Restore saved preferences and start simulation loop
+        loadPreferences();
+        reticle.classList.remove('hidden');
+        requestAnimationFrame(updateLoop);
+    </script>
+</body>
+</html>

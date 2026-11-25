@@ -1,0 +1,6 @@
+{
+  "name": "Universal Eye Tracking & Gaze OS",
+  "description": "Real-time webcam neural iris tracking, adaptive 1-Euro gaze filtering, 9-point affine calibration, and hands-free assistive OS simulator.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
